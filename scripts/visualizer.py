@@ -101,6 +101,12 @@ def data():
 
     logger.info(f"Loading data from checkpoint: {checkpoint_dir}")
     data = load_evolution_data(checkpoint_dir)
+    
+    try:
+        json.dumps(data)
+    except Exception as e:
+        print("JSON serialization error:", e)
+        
     logger.debug(f"Data: {data}")
     return jsonify(data)
 
@@ -112,6 +118,12 @@ def program_page(program_id):
         return "No checkpoint loaded", 500
 
     data = load_evolution_data(checkpoint_dir)
+    
+    try:
+        json.dumps(data)
+    except Exception as e:
+        print("JSON serialization error:", e)
+        
     program_data = next((p for p in data["nodes"] if p["id"] == program_id), None)
     program_data = {"code": "", "prompts": {}, **program_data}
     artifacts_json = program_data.get("artifacts_json", None)
@@ -137,7 +149,9 @@ def run_static_export(args):
 
     with app.app_context():
         data_json = jsonify(data).get_data(as_text=True)
-    inlined = f"<script>window.STATIC_DATA = {data_json};</script>"
+        
+    safe_data_json = json.dumps(data)
+    inlined = f"<script>window.STATIC_DATA = {safe_data_json};</script>"
 
     # Load index.html template
     templates_dir = os.path.join(os.path.dirname(__file__), "templates")

@@ -73,7 +73,7 @@ class OpenEvolve:
 
     def __init__(
         self,
-        initial_program_path: str,
+        initial_program_paths: Union[str, List[str]],
         evaluation_file: str,
         config_path: Optional[str] = None,
         config: Optional[Config] = None,
@@ -87,9 +87,19 @@ class OpenEvolve:
             # Load from file or use defaults
             self.config = load_config(config_path)
 
+        # Handle initial program paths (support single string or list)
+        if isinstance(initial_program_paths, str):
+            self.initial_program_paths = [initial_program_paths]
+        else:
+            self.initial_program_paths = initial_program_paths
+
+        if not self.initial_program_paths:
+            raise ValueError("At least one initial program path must be provided")
+
         # Set up output directory
+        # Use the directory of the first program as the base for output if not specified
         self.output_dir = output_dir or os.path.join(
-            os.path.dirname(initial_program_path), "openevolve_output"
+            os.path.dirname(self.initial_program_paths[0]), "openevolve_output"
         )
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -122,14 +132,18 @@ class OpenEvolve:
             logger.info(f"Set random seed to {self.config.random_seed} for reproducibility")
             logger.debug(f"Generated LLM seed: {llm_seed}")
 
-        # Load initial program
-        self.initial_program_path = initial_program_path
-        self.initial_program_code = self._load_initial_program()
-        if not self.config.language:
-            self.config.language = extract_code_language(self.initial_program_code)
+        # Load initial programs
+        self.initial_programs = self._load_initial_programs()
+        
+        # Use the first program to determine defaults
+        first_program_code = self.initial_programs[0]["code"]
+        first_program_path = self.initial_programs[0]["path"]
 
-        # Extract file extension from initial program
-        self.file_extension = os.path.splitext(initial_program_path)[1]
+        if not self.config.language:
+            self.config.language = extract_code_language(first_program_code)
+
+        # Extract file extension from the first initial program
+        self.file_extension = os.path.splitext(first_program_path)[1]
         if not self.file_extension:
             # Default to .py if no extension found
             self.file_extension = ".py"
@@ -163,11 +177,11 @@ class OpenEvolve:
             self.llm_evaluator_ensemble,
             self.evaluator_prompt_sampler,
             database=self.database,
-            suffix=Path(self.initial_program_path).suffix,
+            suffix=Path(first_program_path).suffix,
         )
         self.evaluation_file = evaluation_file
 
-        logger.info(f"Initialized OpenEvolve with {initial_program_path}")
+        logger.info(f"Initialized OpenEvolve with {len(self.initial_programs)} initial programs")
 
         # Initialize evolution tracer
         if self.config.evolution_trace.enabled:
@@ -218,6 +232,14 @@ class OpenEvolve:
         root_logger.addHandler(console_handler)
 
         logger.info(f"Logging to {log_file}")
+        
+    def _load_initial_programs(self) -> List[Dict[str, str]]:
+        """Load all initial programs from file paths"""
+        programs = []
+        for path in self.initial_program_paths:
+            with open(path, "r") as f:
+                programs.append({"path": path, "code": f.read()})
+        return programs
 
     def _load_initial_program(self) -> str:
         """Load the initial program from file"""
@@ -252,40 +274,52 @@ class OpenEvolve:
         else:
             start_iteration = self.database.last_iteration
 
-        # Only add initial program if starting fresh (not resuming from checkpoint)
+        # Only add initial programs if starting fresh (not resuming from checkpoint)
         should_add_initial = (
             start_iteration == 0
             and len(self.database.programs) == 0
-            and not any(
-                p.code == self.initial_program_code for p in self.database.programs.values()
-            )
         )
 
         if should_add_initial:
-            logger.info("Adding initial program to database")
-            initial_program_id = str(uuid.uuid4())
+            logger.info(f"Adding {len(self.initial_programs)} initial programs to database")
+            
+            first_program_metrics = None
 
-            # Evaluate the initial program
-            initial_metrics = await self.evaluator.evaluate_program(
-                self.initial_program_code, initial_program_id
-            )
+            for program_data in self.initial_programs:
+                code = program_data["code"]
+                path = program_data["path"]
 
-            initial_program = Program(
-                id=initial_program_id,
-                code=self.initial_program_code,
-                language=self.config.language,
-                metrics=initial_metrics,
-                iteration_found=start_iteration,
-            )
+                # Skip if this specific code is already in the database (e.g. duplicates in list)
+                if any(p.code == code for p in self.database.programs.values()):
+                    continue
 
-            self.database.add(initial_program)
+                initial_program_id = str(uuid.uuid4())
 
-            # Check if combined_score is present in the metrics
-            if "combined_score" not in initial_metrics:
+                # Evaluate the initial program
+                initial_metrics = await self.evaluator.evaluate_program(
+                    code, initial_program_id
+                )
+
+                if first_program_metrics is None:
+                    first_program_metrics = initial_metrics
+
+                initial_program = Program(
+                    id=initial_program_id,
+                    code=code,
+                    language=self.config.language,
+                    metrics=initial_metrics,
+                    iteration_found=start_iteration,
+                )
+
+                self.database.add(initial_program)
+                logger.info(f"Added initial program {initial_program_id} from {path}")
+
+            # Check if combined_score is present in the metrics (checking the first one is sufficient)
+            if first_program_metrics and "combined_score" not in first_program_metrics:
                 # Calculate average of numeric metrics
                 numeric_metrics = [
                     v
-                    for v in initial_metrics.values()
+                    for v in first_program_metrics.values()
                     if isinstance(v, (int, float)) and not isinstance(v, bool)
                 ]
                 if numeric_metrics:

@@ -19,10 +19,11 @@ def parse_args() -> argparse.Namespace:
     """Parse command-line arguments"""
     parser = argparse.ArgumentParser(description="OpenEvolve - Evolutionary coding agent")
 
-    parser.add_argument("initial_program", help="Path to the initial program file")
-
+    # CHANGED: Accept multiple inputs (N initial programs + 1 evaluator)
     parser.add_argument(
-        "evaluation_file", help="Path to the evaluation file containing an 'evaluate' function"
+        "inputs", 
+        nargs="+", 
+        help="Paths to initial program file(s) followed by the evaluation file. Example: prog1.py prog2.py evaluator.py"
     )
 
     parser.add_argument("--config", "-c", help="Path to configuration file (YAML)", default=None)
@@ -69,13 +70,24 @@ async def main_async() -> int:
     """
     args = parse_args()
 
-    # Check if files exist
-    if not os.path.exists(args.initial_program):
-        print(f"Error: Initial program file '{args.initial_program}' not found")
+    # CHANGED: Split inputs into initial programs and evaluator
+    if len(args.inputs) < 2:
+        print("Error: You must provide at least one initial program and one evaluation file.")
         return 1
 
-    if not os.path.exists(args.evaluation_file):
-        print(f"Error: Evaluation file '{args.evaluation_file}' not found")
+    # The last argument is always the evaluation file
+    evaluation_file = args.inputs[-1]
+    # Everything before the last argument is an initial program
+    initial_programs = args.inputs[:-1]
+
+    # Check if files exist
+    for prog_path in initial_programs:
+        if not os.path.exists(prog_path):
+            print(f"Error: Initial program file '{prog_path}' not found")
+            return 1
+
+    if not os.path.exists(evaluation_file):
+        print(f"Error: Evaluation file '{evaluation_file}' not found")
         return 1
 
     # Create config object with command-line overrides
@@ -106,9 +118,10 @@ async def main_async() -> int:
 
     # Initialize OpenEvolve
     try:
+        # CHANGED: Pass initial_program_paths list instead of single path
         openevolve = OpenEvolve(
-            initial_program_path=args.initial_program,
-            evaluation_file=args.evaluation_file,
+            initial_program_paths=initial_programs,
+            evaluation_file=evaluation_file,
             config=config,
             config_path=args.config if config is None else None,
             output_dir=args.output,
